@@ -12,8 +12,10 @@ def call(Map config) {
             // Mevcut Branch Adı
             CURRENT_BRANCH = "${env.BRANCH_NAME}"
             
-            // SonarScanner Tool Yolu (GARANTİ ÇÖZÜM İÇİN EKLENDİ)
+            // Araç Yolları
             SCANNER_TOOL = "C:\\dotnet-tools\\dotnet-sonarscanner.exe"
+            // 7-Zip Yolu (Kurduğun yer burası olmalı)
+            ZIP_TOOL = "C:\\Program Files\\7-Zip\\7z.exe"
         }
 
         stages {
@@ -28,8 +30,8 @@ def call(Map config) {
                     script {
                         withSonarQubeEnv(env.SONAR_SERVER) {
                             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                                // DEĞİŞİKLİK BURADA: Artık tam dosya yolunu (env.SCANNER_TOOL) kullanıyor
-                                bat "${env.SCANNER_TOOL} begin /k:\"${config.sonarProjectKey}\" /d:sonar.login=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://localhost:9000\""
+                                // OPTİMİZASYON 1: Exclusions eklendi. (Lib, assets, node_modules taranmayacak)
+                                bat "${env.SCANNER_TOOL} begin /k:\"${config.sonarProjectKey}\" /d:sonar.login=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://localhost:9000\" /d:sonar.exclusions=\"**/wwwroot/lib/**,**/wwwroot/assets/**,**/node_modules/**,**/*.min.css,**/*.min.js,**/*.xml,**/*.json,**/*.png,**/*.jpg\""
                             }
                         }
                     }
@@ -44,7 +46,6 @@ def call(Map config) {
                         
                         withSonarQubeEnv(env.SONAR_SERVER) {
                              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                                 // DEĞİŞİKLİK BURADA: Bitiş komutu da tam yola güncellendi
                                  bat "${env.SCANNER_TOOL} end /d:sonar.login=\"%SONAR_TOKEN%\""
                              }
                         }
@@ -57,57 +58,49 @@ def call(Map config) {
             stage('📦 Karar Anı: Hangi Ortama Gidiyoruz?') {
                 steps {
                     script {
-                        // Varsayılan değerler (Boş)
                         env.ENV_TAG = ""
                         env.TARGET_JOB = "" 
 
-                        // ---------------------------------------------------------
-                        // 1. TEST ORTAMI KONTROLÜ
-                        // ---------------------------------------------------------
                         if (env.CURRENT_BRANCH == 'test' || env.CURRENT_BRANCH == 'test1') {
                             echo "✅ Ortam Tespit Edildi: TEST"
                             env.ENV_TAG = "test"
                             env.TARGET_JOB = "Deploy-to-TEST"
                         } 
-                        // ---------------------------------------------------------
-                        // 2. STAGING ORTAMI KONTROLÜ
-                        // ---------------------------------------------------------
                         else if (env.CURRENT_BRANCH == 'uat-staging' || env.CURRENT_BRANCH == 'uat-staging1') {
                             echo "✅ Ortam Tespit Edildi: STAGING"
                             env.ENV_TAG = "staging"
                             env.TARGET_JOB = "Deploy-to-STAGING"
                         } 
-                        // ---------------------------------------------------------
-                        // 3. PRODUCTION ORTAMI KONTROLÜ
-                        // ---------------------------------------------------------
                         else if (env.CURRENT_BRANCH == 'production' || env.CURRENT_BRANCH == 'production1') {
                             echo "✅ Ortam Tespit Edildi: PRODUCTION"
                             env.ENV_TAG = "prod"
                             env.TARGET_JOB = "Deploy-to-PROD"
                         } 
-                        // ---------------------------------------------------------
-                        // 4. DIGER GELISTRME BRANCHLERI
-                        // ---------------------------------------------------------
                         else {
                             echo "ℹ️ Geliştirme Branch'i: Deploy yapılmayacak."
                             env.ENV_TAG = "dev-${env.BUILD_NUMBER}"
                         }
 
-                        // Dosya adını oluştur
                         def version = "1.0.${env.BUILD_NUMBER}"
                         def zipName = "${config.projectName}-${env.ENV_TAG}-v${version}.zip"
                         
-                        // Ziple
-                        powershell "Compress-Archive -Path ./publish_output/* -DestinationPath ./${zipName} -Force"
+                        // OPTİMİZASYON 2: 7-Zip Kontrolü ve Kullanımı
+                        if (fileExists(env.ZIP_TOOL)) {
+                             echo "🚀 7-Zip bulundu, turbo modda sıkıştırma yapılıyor..."
+                             // 7z komutu: 'a' (add), '-tzip' (zip formatı)
+                             bat "\"${env.ZIP_TOOL}\" a -tzip ./${zipName} ./publish_output/*"
+                        } else {
+                             echo "⚠️ 7-Zip bulunamadı! Yavaş PowerShell sıkıştırması kullanılıyor..."
+                             echo "Lütfen sunucuya C:\\Program Files\\7-Zip\\7z.exe kurun."
+                             powershell "Compress-Archive -Path ./publish_output/* -DestinationPath ./${zipName} -Force"
+                        }
                         
-                        // Sonraki aşamaya taşımak için global değişkene ata
                         env.FINAL_ARTIFACT_NAME = zipName
                     }
                 }
             }
 
             stage('🚀 Nexus & Deploy') {
-                // Sadece hedef job belirlenmişse çalış (Dev branchlerde çalışmaz)
                 when {
                     expression { return env.TARGET_JOB != "" && config.deploy == true }
                 }
@@ -116,7 +109,6 @@ def call(Map config) {
                         echo "🎯 Hedef Job: ${env.TARGET_JOB} tetikleniyor..."
                         echo "📦 Dosya: ${env.FINAL_ARTIFACT_NAME}"
 
-                        // 1. Nexus'a Yükle
                         nexusArtifactUploader(
                             nexusVersion: 'nexus3',
                             protocol: 'http',
@@ -130,7 +122,6 @@ def call(Map config) {
                             ]
                         )
 
-                        // 2. İlgili Job'ı Tetikle (DİNAMİK)
                         build job: env.TARGET_JOB, parameters: [
                             string(name: 'VERSION', value: "1.0.${env.BUILD_NUMBER}"),
                             string(name: 'ARTIFACT_NAME', value: env.FINAL_ARTIFACT_NAME)
