@@ -7,24 +7,22 @@
             SONAR_SERVER = 'SonarQube' 
             SONAR_TOKEN_ID = 'sonarqube-token'
             NEXUS_CRED_ID = 'nexus-admin-credentials'
-            NEXUS_REPO = 'nexus-candidates' // Raw repo adın
+            NEXUS_REPO = 'nexus-candidates' 
             
-            // Branch ismini alıyoruz (Jenkins otomatik verir)
+            // Mevcut Branch Adı
             CURRENT_BRANCH = "${env.BRANCH_NAME}"
         }
 
         stages {
-            stage('📥 Kaynak Kod (Checkout)') {
+            stage('📥 Kaynak Kod') {
                 steps {
-                    // Git'ten çek
-                    git branch: config.branchName ?: 'main', url: config.gitUrl
+                    git branch: "${env.BRANCH_NAME}", url: config.gitUrl
                 }
             }
 
             stage('🔍 SonarQube Analizi') {
                 steps {
                     script {
-                        // YAML'daki "SonarQube Begin" adımı
                         withSonarQubeEnv(env.SONAR_SERVER) {
                             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                                 bat "dotnet sonarscanner begin /k:\"${config.sonarProjectKey}\" /d:sonar.login=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://localhost:9000\""
@@ -37,62 +35,82 @@
             stage('🔨 Build & Publish') {
                 steps {
                     script {
-                        // YAML'daki Restore, Build, Publish adımları
                         bat "dotnet restore ${config.solutionPath}"
                         bat "dotnet build ${config.solutionPath} -c Release --no-restore"
                         
-                        // Sonar Bitiş
                         withSonarQubeEnv(env.SONAR_SERVER) {
                              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                                  bat "dotnet sonarscanner end /d:sonar.login=\"%SONAR_TOKEN%\""
                              }
                         }
-
-                        // Publish
+                        
                         bat "dotnet publish ${config.solutionPath} -c Release -o ./publish_output"
                     }
                 }
             }
 
-            stage('📦 Paketleme ve İsimlendirme') {
+            stage('📦 Karar Anı: Hangi Ortama Gidiyoruz?') {
                 steps {
                     script {
-                        // --- İŞTE SENİN YAML MANTIĞIN BURADA ---
-                        def envTag = ""
-                        
-                        if (env.CURRENT_BRANCH == 'test') {
-                            envTag = "test"
-                        } else if (env.CURRENT_BRANCH == 'uat-staging') {
-                            envTag = "staging"
-                        } else if (env.CURRENT_BRANCH == 'production') {
-                            envTag = "prod"
-                        } else {
-                            // Branch ismi standart dışıysa (örn: feature/login) varsayılan:
-                            envTag = "dev-${env.BUILD_NUMBER}"
+                        // Varsayılan değerler (Boş)
+                        env.ENV_TAG = ""
+                        env.TARGET_JOB = "" 
+
+                        // ---------------------------------------------------------
+                        // 1. TEST ORTAMI KONTROLÜ
+                        // ---------------------------------------------------------
+                        if (env.CURRENT_BRANCH == 'test' || env.CURRENT_BRANCH == 'test1') {
+                            echo "✅ Ortam Tespit Edildi: TEST"
+                            env.ENV_TAG = "test"
+                            env.TARGET_JOB = "Deploy-to-TEST"
+                        } 
+                        // ---------------------------------------------------------
+                        // 2. STAGING ORTAMI KONTROLÜ
+                        // ---------------------------------------------------------
+                        else if (env.CURRENT_BRANCH == 'uat-staging' || env.CURRENT_BRANCH == 'uat-staging1') {
+                            echo "✅ Ortam Tespit Edildi: STAGING"
+                            env.ENV_TAG = "staging"
+                            env.TARGET_JOB = "Deploy-to-STAGING"
+                        } 
+                        // ---------------------------------------------------------
+                        // 3. PRODUCTION ORTAMI KONTROLÜ
+                        // ---------------------------------------------------------
+                        else if (env.CURRENT_BRANCH == 'production' || env.CURRENT_BRANCH == 'production1') {
+                            echo "✅ Ortam Tespit Edildi: PRODUCTION"
+                            env.ENV_TAG = "prod"
+                            env.TARGET_JOB = "Deploy-to-PROD"
+                        } 
+                        // ---------------------------------------------------------
+                        // 4. DIGER GELISTRME BRANCHLERI
+                        // ---------------------------------------------------------
+                        else {
+                            echo "ℹ️ Geliştirme Branch'i: Deploy yapılmayacak."
+                            env.ENV_TAG = "dev-${env.BUILD_NUMBER}"
                         }
 
-                        // Dosya Adı: app-test-v1.0.55.zip
+                        // Dosya adını oluştur
                         def version = "1.0.${env.BUILD_NUMBER}"
-                        def zipName = "${config.projectName}-${envTag}-v${version}.zip"
+                        def zipName = "${config.projectName}-${env.ENV_TAG}-v${version}.zip"
                         
-                        // Zip Oluştur
+                        // Ziple
                         powershell "Compress-Archive -Path ./publish_output/* -DestinationPath ./${zipName} -Force"
                         
-                        // Değişkeni global yapalım ki sonraki adımda kullanalım
+                        // Sonraki aşamaya taşımak için global değişkene ata
                         env.FINAL_ARTIFACT_NAME = zipName
                     }
                 }
             }
 
-            stage('🚀 Nexus Upload & Deploy') {
-                // Sadece belirlediğimiz branchlerde çalışsın (YAML'daki 'if' mantığı)
+            stage('🚀 Nexus & Deploy') {
+                // Sadece hedef job belirlenmişse çalış (Dev branchlerde çalışmaz)
                 when {
-                    expression {
-                        return ['test', 'uat-staging', 'production'].contains(env.BRANCH_NAME)
-                    }
+                    expression { return env.TARGET_JOB != "" && config.deploy == true }
                 }
                 steps {
                     script {
+                        echo "🎯 Hedef Job: ${env.TARGET_JOB} tetikleniyor..."
+                        echo "📦 Dosya: ${env.FINAL_ARTIFACT_NAME}"
+
                         // 1. Nexus'a Yükle
                         nexusArtifactUploader(
                             nexusVersion: 'nexus3',
@@ -107,23 +125,11 @@
                             ]
                         )
 
-                        // 2. İlgili Deploy Job'ını Tetikle
-                        def targetJob = ""
-                        if (env.CURRENT_BRANCH == 'test') {
-                            targetJob = "Deploy-to-TEST"
-                        } else if (env.CURRENT_BRANCH == 'uat-staging') {
-                            targetJob = "Deploy-to-STAGING"
-                        } else if (env.CURRENT_BRANCH == 'production') {
-                            targetJob = "Deploy-to-PROD"
-                        }
-
-                        echo "Tetiklenen Job: ${targetJob}"
-                        
-                        // Jenkins'in kendi "build" komutu (CURL kullanmaya gerek yok, daha güvenli)
-                        build job: targetJob, parameters: [
+                        // 2. İlgili Job'ı Tetikle (DİNAMİK)
+                        build job: env.TARGET_JOB, parameters: [
                             string(name: 'VERSION', value: "1.0.${env.BUILD_NUMBER}"),
                             string(name: 'ARTIFACT_NAME', value: env.FINAL_ARTIFACT_NAME)
-                        ], wait: false // Deploy bitmesini bekleme, tetikle ve çık
+                        ], wait: false
                     }
                 }
             }
