@@ -7,7 +7,7 @@ def call(Map config) {
             SONAR_SERVER = 'SonarQube' 
             SONAR_TOKEN_ID = 'sonarqube-token'
             NEXUS_CRED_ID = 'nexus-admin-credentials'
-            NEXUS_REPO = 'nexus-candidates' 
+            NEXUS_REPO = 'nexus-candidates-maven'
             
             // Mevcut Branch Adı
             CURRENT_BRANCH = "${env.BRANCH_NAME}"
