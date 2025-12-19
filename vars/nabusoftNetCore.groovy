@@ -11,6 +11,9 @@ def call(Map config) {
             
             // Mevcut Branch Adı
             CURRENT_BRANCH = "${env.BRANCH_NAME}"
+            
+            // SonarScanner Tool Yolu (GARANTİ ÇÖZÜM İÇİN EKLENDİ)
+            SCANNER_TOOL = "C:\\dotnet-tools\\dotnet-sonarscanner.exe"
         }
 
         stages {
@@ -25,7 +28,8 @@ def call(Map config) {
                     script {
                         withSonarQubeEnv(env.SONAR_SERVER) {
                             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                                bat "dotnet sonarscanner begin /k:\"${config.sonarProjectKey}\" /d:sonar.login=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://localhost:9000\""
+                                // DEĞİŞİKLİK BURADA: Artık tam dosya yolunu (env.SCANNER_TOOL) kullanıyor
+                                bat "${env.SCANNER_TOOL} begin /k:\"${config.sonarProjectKey}\" /d:sonar.login=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://localhost:9000\""
                             }
                         }
                     }
@@ -40,7 +44,8 @@ def call(Map config) {
                         
                         withSonarQubeEnv(env.SONAR_SERVER) {
                              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                                 bat "dotnet sonarscanner end /d:sonar.login=\"%SONAR_TOKEN%\""
+                                 // DEĞİŞİKLİK BURADA: Bitiş komutu da tam yola güncellendi
+                                 bat "${env.SCANNER_TOOL} end /d:sonar.login=\"%SONAR_TOKEN%\""
                              }
                         }
                         
