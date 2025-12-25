@@ -1,27 +1,34 @@
 def call(Map config) {
     pipeline {
-        agent any
+        // Build işlemi müsait olan herhangi bir ajanda (Genelde ISTS201) çalışsın
+        agent any 
         
         environment {
-            // Jenkins Ayarları
+            // --- JENKINS AYARLARI ---
             SONAR_SERVER = 'SonarQube' 
             SONAR_TOKEN_ID = 'sonarqube-token'
             NEXUS_CRED_ID = 'nexus-admin-credentials'
             NEXUS_REPO = 'nexus-candidates-maven'
             
+            // --- YENİ SUNUCU ADRESLERİ (Dış IP) ---
+            // Ajan sunucular localhost'u göremez, o yüzden ana sunucu IP'sini veriyoruz
+            SONAR_HOST_URL = "http://194.99.74.2:9000"
+            NEXUS_HOST_URL = "http://194.99.74.2:8081"
+            
             // Mevcut Branch Adı
             CURRENT_BRANCH = "${env.BRANCH_NAME}"
             
-            // Araç Yolları
+            // Araç Yolları 
+            // NOT: ISTS201 sunucusunda bu yolların dolu olduğundan emin ol!
             SCANNER_TOOL = "C:\\dotnet-tools\\dotnet-sonarscanner.exe"
-            // 7-Zip Yolu (Kurduğun yer burası olmalı)
             ZIP_TOOL = "C:\\Program Files\\7-Zip\\7z.exe"
         }
 
         stages {
             stage('📥 Kaynak Kod') {
                 steps {
-                    git branch: "${env.BRANCH_NAME}", url: config.gitUrl
+                    // GitHub Token ID'sini buraya yazdım, Jenkins'te oluşturduğun ID bu olmalı
+                    git branch: "${env.BRANCH_NAME}", credentialsId: 'github-login', url: config.gitUrl
                 }
             }
 
@@ -30,8 +37,8 @@ def call(Map config) {
                     script {
                         withSonarQubeEnv(env.SONAR_SERVER) {
                             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                                // OPTİMİZASYON 1: Exclusions eklendi. (Lib, assets, node_modules taranmayacak)
-                                bat "${env.SCANNER_TOOL} begin /k:\"${config.sonarProjectKey}\" /d:sonar.login=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://localhost:9000\" /d:sonar.exclusions=\"**/wwwroot/lib/**,**/wwwroot/assets/**,**/node_modules/**,**/*.min.css,**/*.min.js,**/*.xml,**/*.json,**/*.png,**/*.jpg\""
+                                // GÜNCELLEME: sonar.host.url artık 194.99.74.2 adresine bakıyor
+                                bat "${env.SCANNER_TOOL} begin /k:\"${config.sonarProjectKey}\" /d:sonar.token=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"${env.SONAR_HOST_URL}\" /d:sonar.exclusions=\"**/wwwroot/lib/**,**/wwwroot/assets/**,**/node_modules/**,**/*.min.css,**/*.min.js,**/*.xml,**/*.json,**/*.png,**/*.jpg\""
                             }
                         }
                     }
@@ -46,7 +53,7 @@ def call(Map config) {
                         
                         withSonarQubeEnv(env.SONAR_SERVER) {
                              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                                 bat "${env.SCANNER_TOOL} end /d:sonar.login=\"%SONAR_TOKEN%\""
+                                  bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
                              }
                         }
                         
@@ -55,7 +62,7 @@ def call(Map config) {
                 }
             }
 
-            stage('📦 Karar Anı: Hangi Ortama Gidiyoruz?') {
+            stage('📦 Paketleme (Artifact)') {
                 steps {
                     script {
                         env.ENV_TAG = ""
@@ -66,32 +73,24 @@ def call(Map config) {
                             env.ENV_TAG = "test"
                             env.TARGET_JOB = "Deploy-to-TEST"
                         } 
-                        else if (env.CURRENT_BRANCH == 'uat-staging' || env.CURRENT_BRANCH == 'uat-staging1') {
-                            echo "✅ Ortam Tespit Edildi: STAGING"
-                            env.ENV_TAG = "staging"
-                            env.TARGET_JOB = "Deploy-to-STAGING"
-                        } 
-                        else if (env.CURRENT_BRANCH == 'production' || env.CURRENT_BRANCH == 'production1') {
+                        else if (env.CURRENT_BRANCH == 'production' || env.CURRENT_BRANCH == 'main') {
                             echo "✅ Ortam Tespit Edildi: PRODUCTION"
                             env.ENV_TAG = "prod"
                             env.TARGET_JOB = "Deploy-to-PROD"
                         } 
                         else {
-                            echo "ℹ️ Geliştirme Branch'i: Deploy yapılmayacak."
+                            echo "ℹ️ Geliştirme Branch'i: Sadece Build yapılacak."
                             env.ENV_TAG = "dev-${env.BUILD_NUMBER}"
                         }
 
                         def version = "1.0.${env.BUILD_NUMBER}"
                         def zipName = "${config.projectName}-${env.ENV_TAG}-v${version}.zip"
                         
-                        // OPTİMİZASYON 2: 7-Zip Kontrolü ve Kullanımı
                         if (fileExists(env.ZIP_TOOL)) {
-                             echo "🚀 7-Zip bulundu, turbo modda sıkıştırma yapılıyor..."
-                             // 7z komutu: 'a' (add), '-tzip' (zip formatı)
+                             echo "🚀 7-Zip bulundu, hızlı sıkıştırma yapılıyor..."
                              bat "\"${env.ZIP_TOOL}\" a -tzip ./${zipName} ./publish_output/*"
                         } else {
                              echo "⚠️ 7-Zip bulunamadı! Yavaş PowerShell sıkıştırması kullanılıyor..."
-                             echo "Lütfen sunucuya C:\\Program Files\\7-Zip\\7z.exe kurun."
                              powershell "Compress-Archive -Path ./publish_output/* -DestinationPath ./${zipName} -Force"
                         }
                         
@@ -100,19 +99,18 @@ def call(Map config) {
                 }
             }
 
-            stage('🚀 Nexus & Deploy') {
+            stage('🚀 Nexus Upload & Deploy Tetikleme') {
                 when {
                     expression { return env.TARGET_JOB != "" && config.deploy == true }
                 }
                 steps {
                     script {
-                        echo "🎯 Hedef Job: ${env.TARGET_JOB} tetikleniyor..."
-                        echo "📦 Dosya: ${env.FINAL_ARTIFACT_NAME}"
-
+                        echo "🎯 Hedef Job: ${env.TARGET_JOB}"
+                        
                         nexusArtifactUploader(
                             nexusVersion: 'nexus3',
                             protocol: 'http',
-                            nexusUrl: 'localhost:8081',
+                            nexusUrl: '194.99.74.2:8081', // KRİTİK GÜNCELLEME: Dış IP
                             groupId: 'com.nabusoft',
                             version: "1.0.${env.BUILD_NUMBER}",
                             repository: env.NEXUS_REPO,
@@ -122,6 +120,7 @@ def call(Map config) {
                             ]
                         )
 
+                        // Deploy Job'ını tetikle (wait: false = bitmesini bekleme, hemen bitir)
                         build job: env.TARGET_JOB, parameters: [
                             string(name: 'VERSION', value: "1.0.${env.BUILD_NUMBER}"),
                             string(name: 'ARTIFACT_NAME', value: env.FINAL_ARTIFACT_NAME)
