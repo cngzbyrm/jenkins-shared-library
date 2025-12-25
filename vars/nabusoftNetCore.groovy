@@ -75,7 +75,7 @@ def call(Map config) {
                             env.TARGET_JOB = "Deploy-to-STAGING"
                         }
                         // 3. PRODUCTION ORTAMI
-                        else if (env.CURRENT_BRANCH == 'production' || env.CURRENT_BRANCH == 'main') {
+                        else if (env.CURRENT_BRANCH == 'production' || env.CURRENT_BRANCH == 'production1') {
                             echo "✅ Ortam Tespit Edildi: PRODUCTION"
                             env.ENV_TAG = "prod"
                             env.TARGET_JOB = "Deploy-to-PROD"
