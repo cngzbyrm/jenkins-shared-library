@@ -1,6 +1,6 @@
 def call(Map config) {
     pipeline {
-        agent any 
+        agent { label 'Built-In Node' }
         
         environment {
             // --- JENKINS AYARLARI ---
