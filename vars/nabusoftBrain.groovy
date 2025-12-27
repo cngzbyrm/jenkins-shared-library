@@ -1,6 +1,6 @@
 def call() {
     pipeline {
-        agent { label 'built-in' } // Build işlemleri DevOps sunucusunda
+        agent { label 'built-in' } // Build işlemleri DevOps sunucusunda yapılır
         
         environment {
             // --- ORTAK ARAÇLAR ---
@@ -11,36 +11,49 @@ def call() {
             NEXUS_CRED_ID = 'nexus-admin-credentials'
             NEXUS_BASE_URL = "http://194.99.74.2:8081/repository"
             
-            // Proje Adını Git URL veya Job isminden yakala
-            // Örn: "NishCMS" veya "Shell.OneHub"
-            PROJECT_KEY = "${env.JOB_NAME.tokenize('/')[0]}" 
+            // PROJECT_KEY BURADAN KALDIRILDI. AŞAĞIDA HESAPLANACAK.
         }
 
         stages {
             stage('🧠 Beyin: Proje Analizi') {
                 steps {
                     script {
-                        echo "🕵️ Kimlik Tespiti: ${env.PROJECT_KEY}"
+                        // =========================================================
+                        // 1. KİMLİK TESPİTİ (GÜVENLİ YÖNTEM)
+                        // =========================================================
+                        // Jenkins Job ismine güvenmek yerine, direkt Git URL'ine bakıyoruz.
+                        // Örn: https://github.com/cngzbyrm/Shell.OneHub.UI.git -> Shell.OneHub.UI
+                        
+                        def gitUrl = scm.getUserRemoteConfigs()[0].getUrl()
+                        def repoName = gitUrl.tokenize('/').last() // Son parçayı al
+                        
+                        // Eğer .git ile bitiyorsa temizle
+                        if (repoName.endsWith('.git')) {
+                            repoName = repoName.substring(0, repoName.length() - 4)
+                        }
+                        
+                        // Global değişkene ata
+                        env.PROJECT_KEY = repoName
+                        
+                        echo "🕵️ URL Analizi: ${gitUrl}"
+                        echo "✅ Tespit Edilen Proje Anahtarı: ${env.PROJECT_KEY}"
                         
                         // =========================================================
-                        // PROJE KATALOĞU (TÜM AYARLAR BURADA)
+                        // 2. PROJE KATALOĞU (TÜM AYARLAR BURADA)
                         // =========================================================
                         def projectCatalog = [
                             
-                            // 1. ESKİ USÜL (TEKİL) PROJE ÖRNEĞİ
-                         'Shell.OneHub.UI': [ // <-- Repo ismin bu olduğu için anahtarı değiştirdim
+                            // --- SENARYO 1: TEKİL PROJE (Shell.OneHub.UI) ---
+                            'Shell.OneHub.UI': [ 
                                 type: 'single',
-                                solutionPath: './OneHub.sln', // <-- Verdiğin yeni solution yolu
-                                projectName: 'Shell.OneHub.UI', // <-- Verdiğin yeni Artifact ID
-                                sonarKey: 'shell-onehub-ui', // <-- Verdiğin yeni Sonar Key
-                                deploy: true,
-                                
-                                // Eğer test ortamı için özel bir job ismi varsa buraya ekle:
-                                // jobTest: 'Deploy-to-Shell-TEST' 
-                                // Eklemezsen varsayılan 'Deploy-to-TEST' çalışır.
+                                solutionPath: './OneHub.sln', 
+                                projectName: 'Shell.OneHub.UI', 
+                                sonarKey: 'shell-onehub-ui', 
+                                deploy: true
+                                // jobTest: 'Deploy-to-Shell-TEST' // Opsiyonel: Özel deploy job'ı
                             ],
 
-                            // 2. YENİ USÜL (MONOREPO) PROJE ÖRNEĞİ
+                            // --- SENARYO 2: MONOREPO (NishCMS) ---
                             'NishCMS': [
                                 type: 'monorepo',
                                 deploy: true,
@@ -49,33 +62,35 @@ def call() {
                                         name: 'NishCMS.BackOffice',
                                         path: './Nish.BackOffice/Nish.BackOffice.sln',
                                         sonarKey: 'NishCMS-BackOffice',
-                                        // Özel Repo ve Job Tanımı
                                         repoTest: 'nexus-nabusoft-nishbackoffice-test',
                                         jobTest: 'Deploy-to-Nabusoft-TEST'
                                     ],
-                                   [
+                                    [
                                         name: 'NishCMS.Store',
                                         path: './Nish.Store/Nish.Store.csproj', 
                                         sonarKey: 'NishCMS-Store',
-                                        repoTest: 'nexus-nabusoft-nishstore-test',
+                                        repoTest: 'nexus-candidates-maven', 
                                         jobTest: 'Deploy-to-Nabusoft-Store-TEST'
-                                    ],
+                                    ]
                                 ]
                             ]
                         ]
 
-                        // --- KARAR MEKANİZMASI ---
+                        // =========================================================
+                        // 3. KARAR MEKANİZMASI
+                        // =========================================================
                         def myConfig = projectCatalog[env.PROJECT_KEY]
 
                         if (!myConfig) {
+                            echo "❌ MEVCUT KATALOG LİSTESİ: ${projectCatalog.keySet()}"
                             error "❌ HATA: '${env.PROJECT_KEY}' kataloğa eklenmemiş! Lütfen nabusoftBrain.groovy dosyasına ekle."
                         }
 
                         if (myConfig.type == 'monorepo') {
-                            echo "✅ MOD: Monorepo (Çoklu Proje)"
+                            echo "✅ MOD: Monorepo (Çoklu Proje) Olarak Çalıştırılıyor..."
                             runMonorepoBuild(myConfig)
                         } else {
-                            echo "✅ MOD: Single (Standart Proje)"
+                            echo "✅ MOD: Single (Standart Proje) Olarak Çalıştırılıyor..."
                             runSingleBuild(myConfig)
                         }
                     }
@@ -86,15 +101,15 @@ def call() {
 }
 
 // =========================================================================
-// FONKSİYON 1: TEKİL PROJELER (Senin Eski Kodun Mantığıyla)
+// FONKSİYON 1: TEKİL PROJELER (Eski Usül - Shell vb.)
 // =========================================================================
 def runSingleBuild(config) {
-    // Stage içinde değil, script bloğu içinde çağırıyoruz
-    // Kod çekme işlemi
+    // 1. Kaynak Kod Çekme
     stage('Kaynak Kod') {
         checkout scm
     }
 
+    // 2. SonarQube Analizi Başlat
     stage('SonarQube Analizi') {
         withSonarQubeEnv(env.SONAR_SERVER) {
             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
@@ -103,24 +118,28 @@ def runSingleBuild(config) {
         }
     }
 
+    // 3. Build & Publish
     stage('Build & Publish') {
         bat "dotnet restore ${config.solutionPath}"
         bat "dotnet build ${config.solutionPath} -c Release --no-restore"
         
+        // Sonar Analizini Bitir
         withSonarQubeEnv(env.SONAR_SERVER) {
              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                   bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
              }
         }
+        
         bat "dotnet publish ${config.solutionPath} -c Release -o ./publish_output"
     }
 
+    // 4. Paketleme ve Ortam Kararı
     stage('Paketleme ve Ortam Kararı') {
         env.ENV_TAG = ""
         env.TARGET_JOB = ""
-        env.NEXUS_REPO = 'nexus-candidates-maven' // Varsayılan
+        env.NEXUS_REPO = 'nexus-candidates-maven' // Varsayılan Repo
 
-        // --- SENİN ESKİ IF/ELSE MANTIĞIN ---
+        // Ortam Kontrolü (Branch'e göre)
         if (env.BRANCH_NAME == 'test' || env.BRANCH_NAME == 'test1') {
             env.ENV_TAG = "test"
             env.TARGET_JOB = "Deploy-to-TEST"
@@ -137,6 +156,11 @@ def runSingleBuild(config) {
             env.ENV_TAG = "dev-${env.BUILD_NUMBER}"
         }
 
+        // Eğer katalogda özel bir job tanımlıysa onu kullan (Örn: jobTest)
+        if (env.ENV_TAG == "test" && config.jobTest) {
+            env.TARGET_JOB = config.jobTest
+        }
+
         // Zip Oluşturma
         def version = "1.0.${env.BUILD_NUMBER}"
         def zipName = "${config.projectName}-${env.ENV_TAG}-v${version}.zip"
@@ -147,11 +171,12 @@ def runSingleBuild(config) {
              powershell "Compress-Archive -Path ./publish_output/* -DestinationPath ./${zipName} -Force"
         }
         
-        // Değişkenleri dışarı taşı (Scope için)
+        // Değişkenleri dışarı taşı
         env.FINAL_ZIP_NAME = zipName
         env.FINAL_VERSION = version
     }
 
+    // 5. Nexus Upload & Deploy
     stage('Nexus Upload & Deploy') {
         if (env.TARGET_JOB != "" && config.deploy == true) {
             nexusArtifactUploader(
@@ -166,6 +191,8 @@ def runSingleBuild(config) {
                 string(name: 'VERSION', value: env.FINAL_VERSION),
                 string(name: 'ARTIFACT_NAME', value: env.FINAL_ZIP_NAME)
             ], wait: false
+        } else {
+            echo "⚠️ Deploy adımı atlandı. (Deploy kapalı veya uygun branch değil)"
         }
     }
 }
