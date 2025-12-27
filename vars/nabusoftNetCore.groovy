@@ -7,9 +7,9 @@ def call(Map config) {
             SONAR_SERVER = 'SonarQube' 
             SONAR_TOKEN_ID = 'sonarqube-token'
             
-            // Nexus Varsayılan Ayarları (Başlangıç değeri)
+            // DİKKAT: NEXUS_REPO BURADAN SİLİNDİ! 
+            // Dinamik olarak değişebilmesi için aşağıda script içinde yöneteceğiz.
             NEXUS_CRED_ID = 'nexus-admin-credentials'
-            NEXUS_REPO = 'nexus-candidates-maven' // Varsayılan repo
             
             // --- SUNUCU ADRESLERİ ---
             SONAR_HOST_URL = "http://194.99.74.2:9000"
@@ -68,10 +68,13 @@ def call(Map config) {
             stage('Paketleme ve Ortam Kararı') {
                 steps {
                     script {
+                        // 1. VARSAYILANLARI ATAYALIM (Global environment yerine burada)
+                        // Böylece aşağıda if içinde değiştirdiğimizde Jenkins kabul edecek.
+                        env.NEXUS_REPO = 'nexus-candidates-maven' 
                         env.ENV_TAG = ""
                         env.TARGET_JOB = "" 
 
-                        // Debug: Hatayı görmek için konsola yazdırıyoruz
+                        // Debug: Konsola yazdıralım
                         echo "🔍 DEBUG: Gelen Proje İsmi: '${config.projectName}'"
                         echo "🔍 DEBUG: Çalışan Branch: '${env.CURRENT_BRANCH}'"
 
@@ -88,7 +91,9 @@ def call(Map config) {
                                  
                                  env.ENV_TAG = "test"
                                  env.TARGET_JOB = "Deploy-to-Nabusoft-TEST" 
-                                 env.NEXUS_REPO = 'nexus-nabusoft-nishbackoffice-test' // Özel Repo
+                                 
+                                 // BURASI ARTIK KESİN ÇALIŞACAK (Override)
+                                 env.NEXUS_REPO = 'nexus-nabusoft-nishbackoffice-test' 
                              }
                              
                              // A2. PRODUCTION ORTAMI (Nabusoft Sunucusu veya ISTS201)
@@ -107,7 +112,7 @@ def call(Map config) {
                         }
 
                         // ---------------------------------------------------------
-                        // SENARYO B: DİĞER TÜM PROJELER (ESKİ MANTIK)
+                        // SENARYO B: DİĞER TÜM PROJELER (ESKİ MANTIK - Varsayılan Repo Kalır)
                         // ---------------------------------------------------------
                         else {
                             echo "ℹ️ Standart Proje Akışı (Shell.OneHub vb.)"
@@ -155,6 +160,7 @@ def call(Map config) {
                 }
                 steps {
                     script {
+                        // Debug: Hangi repoya yükleyeceğini görelim
                         echo "📤 Upload Hedefi: ${env.NEXUS_REPO}"
                         
                         nexusArtifactUploader(
@@ -163,7 +169,7 @@ def call(Map config) {
                             nexusUrl: '194.99.74.2:8081',
                             groupId: 'com.nabusoft',
                             version: "1.0.${env.BUILD_NUMBER}",
-                            repository: env.NEXUS_REPO, // Dinamik Repo Değişkeni
+                            repository: env.NEXUS_REPO, // Artık doğru değeri (güncellenmiş hali) alacak
                             credentialsId: env.NEXUS_CRED_ID,
                             artifacts: [
                                 [artifactId: config.projectName, classifier: '', file: env.FINAL_ARTIFACT_NAME, type: 'zip']
