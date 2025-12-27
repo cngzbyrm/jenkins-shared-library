@@ -22,7 +22,6 @@ def call() {
                         // 1. KİMLİK TESPİTİ (GÜVENLİ YÖNTEM)
                         // =========================================================
                         // Jenkins Job ismine güvenmek yerine, direkt Git URL'ine bakıyoruz.
-                        // Örn: https://github.com/cngzbyrm/Shell.OneHub.UI.git -> Shell.OneHub.UI
                         
                         def gitUrl = scm.getUserRemoteConfigs()[0].getUrl()
                         def repoName = gitUrl.tokenize('/').last() // Son parçayı al
@@ -50,7 +49,7 @@ def call() {
                                 projectName: 'Shell.OneHub.UI', 
                                 sonarKey: 'shell-onehub-ui', 
                                 deploy: true
-                                // jobTest: 'Deploy-to-Shell-TEST' // Opsiyonel: Özel deploy job'ı
+                                // jobTest: 'Deploy-to-Shell-TEST' 
                             ],
 
                             // --- SENARYO 2: MONOREPO (NishCMS) ---
@@ -63,13 +62,13 @@ def call() {
                                         path: './Nish.BackOffice/Nish.BackOffice.sln',
                                         sonarKey: 'NishCMS-BackOffice',
                                         repoTest: 'nexus-nabusoft-nishbackoffice-test',
-                                        jobTest: 'Deploy-to-Nabusoft-TEST'
+                                        jobTest: 'Deploy-to-Nabusoft-NishBackoffice-TEST'
                                     ],
                                     [
                                         name: 'NishCMS.Store',
                                         path: './Nish.Store/Nish.Store.csproj', 
                                         sonarKey: 'NishCMS-Store',
-                                        repoTest: 'nexus-candidates-maven', 
+                                        repoTest: 'nexus-nabusoft-store-test', 
                                         jobTest: 'Deploy-to-Nabusoft-Store-TEST'
                                     ]
                                 ]
@@ -198,65 +197,106 @@ def runSingleBuild(config) {
 }
 
 // =========================================================================
-// FONKSİYON 2: MONOREPO PROJELER (NishCMS - Paralel & Özel Repolu)
+// FONKSİYON 2: MONOREPO PROJELER (Akıllı + İzole)
 // =========================================================================
 def runMonorepoBuild(config) {
-    stage('Kaynak Kod') {
+    
+    // Değişiklik listesini ve Manuel tetikleme durumunu al
+    def changedFiles = ""
+    def isManualBuild = currentBuild.getBuildCauses().toString().contains('UserIdCause')
+    
+    stage('Değişiklik Analizi') {
         checkout scm
+        // Git diff ile değişen dosyaları bul
+        try {
+            changedFiles = bat(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
+        } catch (Exception e) {
+            echo "⚠️ İlk build veya Git geçmişi okunamadı. Güvenlik için her şey derlenecek."
+            changedFiles = "ALL"
+        }
+        
+        echo "📝 Değişen Dosyalar:\n${changedFiles}"
+        if (isManualBuild) { echo "👤 Manuel tetikleme: Tüm projeler derlenecek." }
     }
 
     stage('Projeleri İşle (Paralel)') {
         def builders = [:]
 
         config.subProjects.each { proj ->
-            builders["Build: ${proj.name}"] = {
-                stage("Süreç: ${proj.name}") {
-                    
-                    // 1. SONAR
-                    withSonarQubeEnv('SonarQube') {
-                        withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-                            bat "${env.SCANNER_TOOL} begin /k:\"${proj.sonarKey}\" /d:sonar.token=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://194.99.74.2:9000\""
-                        }
+            // Projenin ana klasör adını bul (Örn: ./Nish.BackOffice/... -> Nish.BackOffice)
+            def projFolder = proj.path.split('/')[1] 
+            
+            // KARAR MEKANİZMASI:
+            // 1. Manuel ise YAP.
+            // 2. Geçmiş yoksa (ALL) YAP.
+            // 3. Değişiklik listesinde klasör adı geçiyorsa YAP.
+            // 4. Production branch ise riske atma YAP.
+            
+            def shouldBuild = isManualBuild || 
+                              changedFiles.contains("ALL") || 
+                              changedFiles.contains(projFolder) ||
+                              env.BRANCH_NAME == 'production'
+
+            if (shouldBuild) {
+                builders["🚀 ${proj.name}"] = {
+                    stage("Süreç: ${proj.name}") {
+                        // ✨ KRİTİK: Her proje kendi izole klasöründe çalışsın (Sonar çakışmasını önler)
+                        ws("workspace/${proj.name}") {
+                            checkout scm
+                            
+                            // 1. SONAR
+                            withSonarQubeEnv('SonarQube') {
+                                withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                                    bat "${env.SCANNER_TOOL} begin /k:\"${proj.sonarKey}\" /d:sonar.token=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://194.99.74.2:9000\""
+                                }
+                            }
+
+                            // 2. BUILD
+                            def outputDir = "./publish_output_${proj.name.replace('.', '_')}"
+                            bat "dotnet restore ${proj.path}"
+                            bat "dotnet build ${proj.path} -c Release --no-restore"
+                            
+                            withSonarQubeEnv('SonarQube') {
+                                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                                      bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
+                                 }
+                            }
+                            bat "dotnet publish ${proj.path} -c Release -o ${outputDir}"
+
+                            // 3. ZIP
+                            def version = "1.0.${env.BUILD_NUMBER}"
+                            def zipName = "${proj.name}-${env.BRANCH_NAME}-v${version}.zip"
+                            if (fileExists(env.ZIP_TOOL)) {
+                                 bat "\"${env.ZIP_TOOL}\" a -tzip ./${zipName} ${outputDir}/*"
+                            } else {
+                                 powershell "Compress-Archive -Path ${outputDir}/* -DestinationPath ./${zipName} -Force"
+                            }
+
+                            // 4. UPLOAD
+                            def targetRepo = proj.repoTest ? proj.repoTest : 'nexus-candidates-maven'
+                            nexusArtifactUploader(
+                                nexusVersion: 'nexus3', protocol: 'http', nexusUrl: '194.99.74.2:8081',
+                                groupId: 'com.nabusoft', version: version, repository: targetRepo,
+                                credentialsId: env.NEXUS_CRED_ID,
+                                artifacts: [[artifactId: proj.name, classifier: '', file: zipName, type: 'zip']]
+                            )
+
+                            // 5. DEPLOY
+                            if (config.deploy == true && env.BRANCH_NAME == 'test' && proj.jobTest) {
+                                echo "🚀 ${proj.name} -> Tetikleniyor: ${proj.jobTest}"
+                                build job: proj.jobTest, parameters: [
+                                    string(name: 'VERSION', value: version),
+                                    string(name: 'ARTIFACT_NAME', value: zipName)
+                                ], wait: false
+                            }
+                        } // ws sonu
                     }
-
-                    // 2. BUILD
-                    def outputDir = "./publish_output_${proj.name.replace('.', '_')}"
-                    bat "dotnet restore ${proj.path}"
-                    bat "dotnet build ${proj.path} -c Release --no-restore"
-                    
-                    withSonarQubeEnv('SonarQube') {
-                         withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-                              bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
-                         }
-                    }
-                    bat "dotnet publish ${proj.path} -c Release -o ${outputDir}"
-
-                    // 3. ZIP
-                    def version = "1.0.${env.BUILD_NUMBER}"
-                    def zipName = "${proj.name}-${env.BRANCH_NAME}-v${version}.zip"
-                    if (fileExists(env.ZIP_TOOL)) {
-                         bat "\"${env.ZIP_TOOL}\" a -tzip ./${zipName} ${outputDir}/*"
-                    } else {
-                         powershell "Compress-Archive -Path ${outputDir}/* -DestinationPath ./${zipName} -Force"
-                    }
-
-                    // 4. UPLOAD (Özel Repo Ayarı Burada)
-                    def targetRepo = proj.repoTest ? proj.repoTest : 'nexus-candidates-maven'
-                    
-                    nexusArtifactUploader(
-                        nexusVersion: 'nexus3', protocol: 'http', nexusUrl: '194.99.74.2:8081',
-                        groupId: 'com.nabusoft', version: version, repository: targetRepo,
-                        credentialsId: env.NEXUS_CRED_ID,
-                        artifacts: [[artifactId: proj.name, classifier: '', file: zipName, type: 'zip']]
-                    )
-
-                    // 5. DEPLOY (Özel Job Ayarı Burada)
-                    if (config.deploy == true && env.BRANCH_NAME == 'test' && proj.jobTest) {
-                        echo "🚀 ${proj.name} -> Tetikleniyor: ${proj.jobTest}"
-                        build job: proj.jobTest, parameters: [
-                            string(name: 'VERSION', value: version),
-                            string(name: 'ARTIFACT_NAME', value: zipName)
-                        ], wait: false
+                }
+            } else {
+                // Değişiklik yoksa atla
+                builders["💤 ${proj.name} (Atlandı)"] = {
+                    stage("Atlandı: ${proj.name}") {
+                        echo "🛑 ${proj.name} için değişiklik tespit edilmedi. Build atlandı."
                     }
                 }
             }
