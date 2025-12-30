@@ -11,15 +11,19 @@ def call() {
             NEXUS_CRED_ID = 'nexus-admin-credentials'
             NEXUS_BASE_URL = "http://194.99.74.2:8081/repository"
             
-            // PROJECT_KEY aşağıda hesaplanacak
+            // Taranmayacak Dosyalar (HIZ İÇİN ÇOK ÖNEMLİ)
+            // publish_output: Derlenmiş dosyalar
+            // wwwroot/lib, assets/plugins: Hazır kütüphaneler
+            // min.js, min.css: Sıkıştırılmış dosyalar
+            SONAR_EXCLUSIONS = "**/publish_output/**,**/bin/**,**/obj/**,**/wwwroot/lib/**,**/assets/plugins/**,**/*.min.js,**/*.min.css,**/jquery*.js,**/bundleconfig.json"
         }
 
         stages {
-            stage('🧠 Beyin: Proje Analizi') {
+            stage('Beyin: Proje Analizi') {
                 steps {
                     script {
                         // =========================================================
-                        // 1. KİMLİK TESPİTİ
+                        // 1. KİMLİK TESPİTİ (GÜVENLİ YÖNTEM)
                         // =========================================================
                         def gitUrl = scm.getUserRemoteConfigs()[0].getUrl()
                         def repoName = gitUrl.tokenize('/').last()
@@ -28,11 +32,11 @@ def call() {
                         }
                         env.PROJECT_KEY = repoName
                         
-                        echo "🕵️ URL Analizi: ${gitUrl}"
-                        echo "✅ Tespit Edilen Proje: ${env.PROJECT_KEY}"
+                        echo "URL Analizi: ${gitUrl}"
+                        echo "Tespit Edilen Proje: ${env.PROJECT_KEY}"
                         
                         // =========================================================
-                        // 2. PROJE KATALOĞU
+                        // 2. PROJE KATALOĞU (TÜM AYARLAR BURADA)
                         // =========================================================
                         def projectCatalog = [
                             'Shell.OneHub.UI': [ 
@@ -94,10 +98,15 @@ def runSingleBuild(config) {
     }
 
     stage('Build & Analiz') {
-        // Sonar Başlat
+        // Sonar Başlat (EXCLUSIONS EKLENDİ)
         withSonarQubeEnv(env.SONAR_SERVER) {
             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                bat "${env.SCANNER_TOOL} begin /k:\"${config.sonarKey}\" /d:sonar.token=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://194.99.74.2:9000\""
+                bat """
+                    "${env.SCANNER_TOOL}" begin /k:"${config.sonarKey}" ^
+                    /d:sonar.token="%SONAR_TOKEN%" ^
+                    /d:sonar.host.url="http://194.99.74.2:9000" ^
+                    /d:sonar.exclusions="${env.SONAR_EXCLUSIONS}"
+                """
             }
         }
 
@@ -108,7 +117,7 @@ def runSingleBuild(config) {
         // Sonar Bitir
         withSonarQubeEnv(env.SONAR_SERVER) {
              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                  bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
+                  bat "\"${env.SCANNER_TOOL}\" end /d:sonar.token=\"%SONAR_TOKEN%\""
              }
         }
         
@@ -125,11 +134,11 @@ def runSingleBuild(config) {
             env.ENV_TAG = "test"
             env.TARGET_JOB = "Deploy-to-TEST"
         } 
-        else if (env.BRANCH_NAME == 'uat-staging') {
+        else if (env.BRANCH_NAME == 'uat-staging' || env.BRANCH_NAME == 'uat-staging1') {
             env.ENV_TAG = "staging"
             env.TARGET_JOB = "Deploy-to-STAGING"
         }
-        else if (env.BRANCH_NAME == 'production') {
+        else if (env.BRANCH_NAME == 'production' ||  env.BRANCH_NAME == 'uat-staging1') {
             env.ENV_TAG = "prod"
             env.TARGET_JOB = "Deploy-to-PROD" 
         }
@@ -218,10 +227,15 @@ def runMonorepoBuild(config) {
                             // 3. İndirmek yerine, paketlenmiş kodu aç (ÇOK HIZLI)
                             unstash 'source-code'
                             
-                            // SONAR
+                            // SONAR (EXCLUSIONS EKLENDİ)
                             withSonarQubeEnv('SonarQube') {
                                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-                                    bat "${env.SCANNER_TOOL} begin /k:\"${proj.sonarKey}\" /d:sonar.token=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://194.99.74.2:9000\""
+                                    bat """
+                                        "${env.SCANNER_TOOL}" begin /k:"${proj.sonarKey}" ^
+                                        /d:sonar.token="%SONAR_TOKEN%" ^
+                                        /d:sonar.host.url="http://194.99.74.2:9000" ^
+                                        /d:sonar.exclusions="${env.SONAR_EXCLUSIONS}"
+                                    """
                                 }
                             }
 
@@ -232,7 +246,7 @@ def runMonorepoBuild(config) {
                             
                             withSonarQubeEnv('SonarQube') {
                                  withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-                                      bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
+                                      bat "\"${env.SCANNER_TOOL}\" end /d:sonar.token=\"%SONAR_TOKEN%\""
                                  }
                             }
                             
