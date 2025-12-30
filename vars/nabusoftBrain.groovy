@@ -223,7 +223,7 @@ def runMonorepoBuild(config) {
                     stage("Süreç: ${proj.name}") {
                         // İzole çalışma alanı
                         ws("workspace/${proj.name}") {
-                            
+                            cleanWs()
                             // 3. İndirmek yerine, paketlenmiş kodu aç (ÇOK HIZLI)
                             unstash 'source-code'
                             
