@@ -14,11 +14,8 @@ def call() {
             // Hız Ayarı
             SONAR_SCANNER_OPTS = "-Xmx2048m" 
             
-            // Taranmayacak Dosyalar (DÜZELTİLDİ: JS kodlarını tarıyor, çöp dosyaları taramıyor)
+            // Taranmayacak Dosyalar
             SONAR_EXCLUSIONS = "**/publish_output/**,**/bin/**,**/obj/**,**/wwwroot/lib/**,**/assets/plugins/**,**/*.min.js,**/*.min.css,**/jquery*.js,**/bundleconfig.json"
-            
-            // EKSİK OLAN KISIM EKLENDİ (Kodun aşağısında kullanıldığı için burada şart)
-            // JS Copy-Paste kontrolünü kapatır (Hız için)
             SONAR_CPD_EXCLUSIONS = "**/assets/js/**,**/wwwroot/js/**"
         }
 
@@ -52,6 +49,7 @@ def call() {
                                 subProjects: [
                                     [
                                         name: 'NishCMS.BackOffice',
+                                        folderName: 'Nish.BackOffice', // EKLENDİ: Klasör adı garanti olsun
                                         path: './Nish.BackOffice/Nish.BackOffice.sln',
                                         sonarKey: 'NishCMS-BackOffice',
                                         repoTest: 'nexus-nabusoft-nishbackoffice-test',
@@ -59,6 +57,7 @@ def call() {
                                     ],
                                     [
                                         name: 'NishCMS.Store',
+                                        folderName: 'Nish.Store', // EKLENDİ: Klasör adı garanti olsun
                                         path: './Nish.Store/Nish.Store.csproj', 
                                         sonarKey: 'NishCMS-Store',
                                         repoTest: 'nexus-nabusoft-store-test', 
@@ -112,7 +111,7 @@ def runSingleBuild(config) {
         
         withSonarQubeEnv(env.SONAR_SERVER) {
              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
-                  bat "\"${env.SCANNER_TOOL}\" end /d:sonar.token=\"%SONAR_TOKEN%\""
+                 bat "\"${env.SCANNER_TOOL}\" end /d:sonar.token=\"%SONAR_TOKEN%\""
              }
         }
         
@@ -176,7 +175,7 @@ def runSingleBuild(config) {
 }
 
 // =========================================================================
-// FONKSİYON 2: MONOREPO PROJELER (TURBO MOD: Incremental + Stash + NoBuild)
+// FONKSİYON 2: MONOREPO PROJELER (TURBO MOD)
 // =========================================================================
 def runMonorepoBuild(config) {
     
@@ -186,13 +185,16 @@ def runMonorepoBuild(config) {
     stage('Değişiklik Analizi ve Hazırlık') {
         checkout scm
         try {
-            changedFiles = bat(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
+            // DÜZELTME BURADA: 
+            // HEAD~1 yerine HEAD~5 yaparak son 5 commit'i tarıyoruz.
+            // Bu, birden fazla commit pushlandığında "Store" değişikliğinin kaybolmamasını sağlar.
+            changedFiles = bat(script: "git diff --name-only HEAD~5 HEAD", returnStdout: true).trim()
         } catch (Exception e) {
-            echo "Git geçmişi okunamadı. Güvenlik için her şey derlenecek."
+            echo "Git geçmişi tam okunamadı. Güvenlik için her şey derlenecek."
             changedFiles = "ALL"
         }
         
-        echo "Değişen Dosyalar:\n${changedFiles}"
+        echo "Değişen Dosyalar (Son 5 Commit):\n${changedFiles}"
         if (isManualBuild) { echo "Manuel tetikleme: Tüm projeler derlenecek." }
         
         stash name: 'source-code', includes: '**', useDefaultExcludes: false
@@ -202,7 +204,9 @@ def runMonorepoBuild(config) {
         def builders = [:]
 
         config.subProjects.each { proj ->
-            def projFolder = proj.path.split('/')[1] 
+            // DÜZELTME BURADA: 
+            // Config içinde elle 'folderName' verdik, hata payını sıfırladık.
+            def projFolder = proj.folderName ? proj.folderName : proj.path.split('/')[1] 
             
             def shouldBuild = isManualBuild || 
                               changedFiles.contains("ALL") || 
@@ -214,13 +218,13 @@ def runMonorepoBuild(config) {
                     stage("Süreç: ${proj.name}") {
                         ws("workspace/${proj.name}") {
                             
-                            // 1. Temizlik (Access Denied hatasını önler)
+                            // 1. Temizlik
                             cleanWs() 
                             
                             // 2. Kodu aç
                             unstash 'source-code'
                             
-                            // 3. SONAR (EXCLUSIONS ve CPD AYARLARI)
+                            // 3. SONAR
                             withSonarQubeEnv('SonarQube') {
                                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
                                     bat """
@@ -279,7 +283,7 @@ def runMonorepoBuild(config) {
             } else {
                 builders["💤 ${proj.name} (Atlandı)"] = {
                     stage("Atlandı: ${proj.name}") {
-                        echo "🛑 ${proj.name} için değişiklik yok. Build atlandı."
+                        echo "🛑 ${proj.name} için değişiklik yok (${projFolder}). Build atlandı."
                     }
                 }
             }
