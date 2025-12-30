@@ -10,21 +10,23 @@ def call() {
             SONAR_TOKEN_ID = 'sonarqube-token'
             NEXUS_CRED_ID = 'nexus-admin-credentials'
             NEXUS_BASE_URL = "http://194.99.74.2:8081/repository"
-            SONAR_SCANNER_OPTS = "-Xmx2048m"
-            // Taranmayacak Dosyalar (HIZ İÇİN ÇOK ÖNEMLİ)
-            // publish_output: Derlenmiş dosyalar
-            // wwwroot/lib, assets/plugins: Hazır kütüphaneler
-            // min.js, min.css: Sıkıştırılmış dosyalar
+            
+            // Hız Ayarı
+            SONAR_SCANNER_OPTS = "-Xmx2048m" 
+            
+            // Taranmayacak Dosyalar (DÜZELTİLDİ: JS kodlarını tarıyor, çöp dosyaları taramıyor)
             SONAR_EXCLUSIONS = "**/publish_output/**,**/bin/**,**/obj/**,**/wwwroot/lib/**,**/assets/plugins/**,**/*.min.js,**/*.min.css,**/jquery*.js,**/bundleconfig.json"
+            
+            // EKSİK OLAN KISIM EKLENDİ (Kodun aşağısında kullanıldığı için burada şart)
+            // JS Copy-Paste kontrolünü kapatır (Hız için)
+            SONAR_CPD_EXCLUSIONS = "**/assets/js/**,**/wwwroot/js/**"
         }
 
         stages {
             stage('Beyin: Proje Analizi') {
                 steps {
                     script {
-                        // =========================================================
-                        // 1. KİMLİK TESPİTİ (GÜVENLİ YÖNTEM)
-                        // =========================================================
+                        // 1. KİMLİK TESPİTİ
                         def gitUrl = scm.getUserRemoteConfigs()[0].getUrl()
                         def repoName = gitUrl.tokenize('/').last()
                         if (repoName.endsWith('.git')) {
@@ -35,9 +37,7 @@ def call() {
                         echo "URL Analizi: ${gitUrl}"
                         echo "Tespit Edilen Proje: ${env.PROJECT_KEY}"
                         
-                        // =========================================================
-                        // 2. PROJE KATALOĞU (TÜM AYARLAR BURADA)
-                        // =========================================================
+                        // 2. PROJE KATALOĞU
                         def projectCatalog = [
                             'Shell.OneHub.UI': [ 
                                 type: 'single',
@@ -68,9 +68,7 @@ def call() {
                             ]
                         ]
 
-                        // =========================================================
                         // 3. KARAR MEKANİZMASI
-                        // =========================================================
                         def myConfig = projectCatalog[env.PROJECT_KEY]
 
                         if (!myConfig) {
@@ -90,7 +88,7 @@ def call() {
 }
 
 // =========================================================================
-// FONKSİYON 1: TEKİL PROJELER (SINGLE - OPTİMİZE EDİLDİ)
+// FONKSİYON 1: TEKİL PROJELER (SINGLE)
 // =========================================================================
 def runSingleBuild(config) {
     stage('Kaynak Kod') {
@@ -98,7 +96,6 @@ def runSingleBuild(config) {
     }
 
     stage('Build & Analiz') {
-        // Sonar Başlat (EXCLUSIONS EKLENDİ)
         withSonarQubeEnv(env.SONAR_SERVER) {
             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                 bat """
@@ -110,18 +107,15 @@ def runSingleBuild(config) {
             }
         }
 
-        // Build (Restore dahil)
         bat "dotnet restore ${config.solutionPath}"
         bat "dotnet build ${config.solutionPath} -c Release --no-restore"
         
-        // Sonar Bitir
         withSonarQubeEnv(env.SONAR_SERVER) {
              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                   bat "\"${env.SCANNER_TOOL}\" end /d:sonar.token=\"%SONAR_TOKEN%\""
              }
         }
         
-        // Publish (TEKRAR BUILD ETMEDEN - HIZ KAZANCI)
         bat "dotnet publish ${config.solutionPath} -c Release -o ./publish_output --no-build"
     }
 
@@ -190,20 +184,17 @@ def runMonorepoBuild(config) {
     def isManualBuild = currentBuild.getBuildCauses().toString().contains('UserIdCause')
     
     stage('Değişiklik Analizi ve Hazırlık') {
-        // 1. Kodu SADECE BURADA İNDİRİYORUZ (HIZ İÇİN)
         checkout scm
-        
         try {
             changedFiles = bat(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
         } catch (Exception e) {
-            echo "⚠️ Git geçmişi okunamadı. Güvenlik için her şey derlenecek."
+            echo "Git geçmişi okunamadı. Güvenlik için her şey derlenecek."
             changedFiles = "ALL"
         }
         
-        echo "📝 Değişen Dosyalar:\n${changedFiles}"
-        if (isManualBuild) { echo "👤 Manuel tetikleme: Tüm projeler derlenecek." }
+        echo "Değişen Dosyalar:\n${changedFiles}"
+        if (isManualBuild) { echo "Manuel tetikleme: Tüm projeler derlenecek." }
         
-        // 2. İndirilen kodu Jenkins içinde paketle (Diğer aşamalarda indirmemek için)
         stash name: 'source-code', includes: '**', useDefaultExcludes: false
     }
 
@@ -219,27 +210,30 @@ def runMonorepoBuild(config) {
                               env.BRANCH_NAME == 'production'
 
             if (shouldBuild) {
-                builders["🚀 ${proj.name}"] = {
+                builders["${proj.name}"] = {
                     stage("Süreç: ${proj.name}") {
-                        // İzole çalışma alanı
                         ws("workspace/${proj.name}") {
-                            cleanWs()
-                            // 3. İndirmek yerine, paketlenmiş kodu aç (ÇOK HIZLI)
+                            
+                            // 1. Temizlik (Access Denied hatasını önler)
+                            cleanWs() 
+                            
+                            // 2. Kodu aç
                             unstash 'source-code'
                             
-                            // SONAR (EXCLUSIONS EKLENDİ)
+                            // 3. SONAR (EXCLUSIONS ve CPD AYARLARI)
                             withSonarQubeEnv('SonarQube') {
                                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
                                     bat """
                                         "${env.SCANNER_TOOL}" begin /k:"${proj.sonarKey}" ^
                                         /d:sonar.token="%SONAR_TOKEN%" ^
                                         /d:sonar.host.url="http://194.99.74.2:9000" ^
-                                        /d:sonar.exclusions="${env.SONAR_EXCLUSIONS}"
+                                        /d:sonar.exclusions="${env.SONAR_EXCLUSIONS}" ^
+                                        /d:sonar.cpd.exclusions="${env.SONAR_CPD_EXCLUSIONS}"
                                     """
                                 }
                             }
 
-                            // BUILD (Optimize Edildi)
+                            // 4. BUILD
                             def outputDir = "./publish_output_${proj.name.replace('.', '_')}"
                             bat "dotnet restore ${proj.path}"
                             bat "dotnet build ${proj.path} -c Release --no-restore"
@@ -250,10 +244,10 @@ def runMonorepoBuild(config) {
                                  }
                             }
                             
-                            // PUBLISH (Tekrar derlemeyi engelle: --no-build)
+                            // 5. PUBLISH
                             bat "dotnet publish ${proj.path} -c Release -o ${outputDir} --no-build"
 
-                            // ZIP
+                            // 6. ZIP
                             def version = "1.0.${env.BUILD_NUMBER}"
                             def zipName = "${proj.name}-${env.BRANCH_NAME}-v${version}.zip"
                             if (fileExists(env.ZIP_TOOL)) {
@@ -262,7 +256,7 @@ def runMonorepoBuild(config) {
                                  powershell "Compress-Archive -Path ${outputDir}/* -DestinationPath ./${zipName} -Force"
                             }
 
-                            // UPLOAD
+                            // 7. UPLOAD
                             def targetRepo = proj.repoTest ? proj.repoTest : 'nexus-candidates-maven'
                             nexusArtifactUploader(
                                 nexusVersion: 'nexus3', protocol: 'http', nexusUrl: '194.99.74.2:8081',
@@ -271,7 +265,7 @@ def runMonorepoBuild(config) {
                                 artifacts: [[artifactId: proj.name, classifier: '', file: zipName, type: 'zip']]
                             )
 
-                            // DEPLOY TETİKLEME
+                            // 8. DEPLOY TETİKLEME
                             if (config.deploy == true && env.BRANCH_NAME == 'test' && proj.jobTest) {
                                 echo "🚀 ${proj.name} -> Tetikleniyor: ${proj.jobTest}"
                                 build job: proj.jobTest, parameters: [
@@ -279,7 +273,7 @@ def runMonorepoBuild(config) {
                                     string(name: 'ARTIFACT_NAME', value: zipName)
                                 ], wait: false
                             }
-                        } // ws sonu
+                        } 
                     }
                 }
             } else {
