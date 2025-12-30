@@ -11,7 +11,7 @@ def call() {
             NEXUS_CRED_ID = 'nexus-admin-credentials'
             NEXUS_BASE_URL = "http://194.99.74.2:8081/repository"
             
-            // PROJECT_KEY BURADAN KALDIRILDI. AŞAĞIDA HESAPLANACAK.
+            // PROJECT_KEY aşağıda hesaplanacak
         }
 
         stages {
@@ -19,40 +19,29 @@ def call() {
                 steps {
                     script {
                         // =========================================================
-                        // 1. KİMLİK TESPİTİ (GÜVENLİ YÖNTEM)
+                        // 1. KİMLİK TESPİTİ
                         // =========================================================
-                        // Jenkins Job ismine güvenmek yerine, direkt Git URL'ine bakıyoruz.
-                        
                         def gitUrl = scm.getUserRemoteConfigs()[0].getUrl()
-                        def repoName = gitUrl.tokenize('/').last() // Son parçayı al
-                        
-                        // Eğer .git ile bitiyorsa temizle
+                        def repoName = gitUrl.tokenize('/').last()
                         if (repoName.endsWith('.git')) {
                             repoName = repoName.substring(0, repoName.length() - 4)
                         }
-                        
-                        // Global değişkene ata
                         env.PROJECT_KEY = repoName
                         
                         echo "🕵️ URL Analizi: ${gitUrl}"
-                        echo "✅ Tespit Edilen Proje Anahtarı: ${env.PROJECT_KEY}"
+                        echo "✅ Tespit Edilen Proje: ${env.PROJECT_KEY}"
                         
                         // =========================================================
-                        // 2. PROJE KATALOĞU (TÜM AYARLAR BURADA)
+                        // 2. PROJE KATALOĞU
                         // =========================================================
                         def projectCatalog = [
-                            
-                            // --- SENARYO 1: TEKİL PROJE (Shell.OneHub.UI) ---
                             'Shell.OneHub.UI': [ 
                                 type: 'single',
                                 solutionPath: './OneHub.sln', 
                                 projectName: 'Shell.OneHub.UI', 
                                 sonarKey: 'shell-onehub-ui', 
                                 deploy: true
-                                // jobTest: 'Deploy-to-Shell-TEST' 
                             ],
-
-                            // --- SENARYO 2: MONOREPO (NishCMS) ---
                             'NishCMS': [
                                 type: 'monorepo',
                                 deploy: true,
@@ -81,15 +70,12 @@ def call() {
                         def myConfig = projectCatalog[env.PROJECT_KEY]
 
                         if (!myConfig) {
-                            echo "❌ MEVCUT KATALOG LİSTESİ: ${projectCatalog.keySet()}"
-                            error "❌ HATA: '${env.PROJECT_KEY}' kataloğa eklenmemiş! Lütfen nabusoftBrain.groovy dosyasına ekle."
+                            error "❌ HATA: '${env.PROJECT_KEY}' kataloğa eklenmemiş!"
                         }
 
                         if (myConfig.type == 'monorepo') {
-                            echo "✅ MOD: Monorepo (Çoklu Proje) Olarak Çalıştırılıyor..."
                             runMonorepoBuild(myConfig)
                         } else {
-                            echo "✅ MOD: Single (Standart Proje) Olarak Çalıştırılıyor..."
                             runSingleBuild(myConfig)
                         }
                     }
@@ -100,45 +86,41 @@ def call() {
 }
 
 // =========================================================================
-// FONKSİYON 1: TEKİL PROJELER (Eski Usül - Shell vb.)
+// FONKSİYON 1: TEKİL PROJELER (SINGLE - OPTİMİZE EDİLDİ)
 // =========================================================================
 def runSingleBuild(config) {
-    // 1. Kaynak Kod Çekme
     stage('Kaynak Kod') {
         checkout scm
     }
 
-    // 2. SonarQube Analizi Başlat
-    stage('SonarQube Analizi') {
+    stage('Build & Analiz') {
+        // Sonar Başlat
         withSonarQubeEnv(env.SONAR_SERVER) {
             withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                 bat "${env.SCANNER_TOOL} begin /k:\"${config.sonarKey}\" /d:sonar.token=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://194.99.74.2:9000\""
             }
         }
-    }
 
-    // 3. Build & Publish
-    stage('Build & Publish') {
+        // Build (Restore dahil)
         bat "dotnet restore ${config.solutionPath}"
         bat "dotnet build ${config.solutionPath} -c Release --no-restore"
         
-        // Sonar Analizini Bitir
+        // Sonar Bitir
         withSonarQubeEnv(env.SONAR_SERVER) {
              withCredentials([string(credentialsId: env.SONAR_TOKEN_ID, variable: 'SONAR_TOKEN')]) {
                   bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
              }
         }
         
-        bat "dotnet publish ${config.solutionPath} -c Release -o ./publish_output"
+        // Publish (TEKRAR BUILD ETMEDEN - HIZ KAZANCI)
+        bat "dotnet publish ${config.solutionPath} -c Release -o ./publish_output --no-build"
     }
 
-    // 4. Paketleme ve Ortam Kararı
     stage('Paketleme ve Ortam Kararı') {
         env.ENV_TAG = ""
         env.TARGET_JOB = ""
-        env.NEXUS_REPO = 'nexus-candidates-maven' // Varsayılan Repo
+        env.NEXUS_REPO = 'nexus-candidates-maven' 
 
-        // Ortam Kontrolü (Branch'e göre)
         if (env.BRANCH_NAME == 'test' || env.BRANCH_NAME == 'test1') {
             env.ENV_TAG = "test"
             env.TARGET_JOB = "Deploy-to-TEST"
@@ -155,12 +137,10 @@ def runSingleBuild(config) {
             env.ENV_TAG = "dev-${env.BUILD_NUMBER}"
         }
 
-        // Eğer katalogda özel bir job tanımlıysa onu kullan (Örn: jobTest)
         if (env.ENV_TAG == "test" && config.jobTest) {
             env.TARGET_JOB = config.jobTest
         }
 
-        // Zip Oluşturma
         def version = "1.0.${env.BUILD_NUMBER}"
         def zipName = "${config.projectName}-${env.ENV_TAG}-v${version}.zip"
         
@@ -170,12 +150,10 @@ def runSingleBuild(config) {
              powershell "Compress-Archive -Path ./publish_output/* -DestinationPath ./${zipName} -Force"
         }
         
-        // Değişkenleri dışarı taşı
         env.FINAL_ZIP_NAME = zipName
         env.FINAL_VERSION = version
     }
 
-    // 5. Nexus Upload & Deploy
     stage('Nexus Upload & Deploy') {
         if (env.TARGET_JOB != "" && config.deploy == true) {
             nexusArtifactUploader(
@@ -190,47 +168,41 @@ def runSingleBuild(config) {
                 string(name: 'VERSION', value: env.FINAL_VERSION),
                 string(name: 'ARTIFACT_NAME', value: env.FINAL_ZIP_NAME)
             ], wait: false
-        } else {
-            echo "⚠️ Deploy adımı atlandı. (Deploy kapalı veya uygun branch değil)"
         }
     }
 }
 
 // =========================================================================
-// FONKSİYON 2: MONOREPO PROJELER (Akıllı + İzole)
+// FONKSİYON 2: MONOREPO PROJELER (TURBO MOD: Incremental + Stash + NoBuild)
 // =========================================================================
 def runMonorepoBuild(config) {
     
-    // Değişiklik listesini ve Manuel tetikleme durumunu al
     def changedFiles = ""
     def isManualBuild = currentBuild.getBuildCauses().toString().contains('UserIdCause')
     
-    stage('Değişiklik Analizi') {
+    stage('Değişiklik Analizi ve Hazırlık') {
+        // 1. Kodu SADECE BURADA İNDİRİYORUZ (HIZ İÇİN)
         checkout scm
-        // Git diff ile değişen dosyaları bul
+        
         try {
             changedFiles = bat(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
         } catch (Exception e) {
-            echo "⚠️ İlk build veya Git geçmişi okunamadı. Güvenlik için her şey derlenecek."
+            echo "⚠️ Git geçmişi okunamadı. Güvenlik için her şey derlenecek."
             changedFiles = "ALL"
         }
         
         echo "📝 Değişen Dosyalar:\n${changedFiles}"
         if (isManualBuild) { echo "👤 Manuel tetikleme: Tüm projeler derlenecek." }
+        
+        // 2. İndirilen kodu Jenkins içinde paketle (Diğer aşamalarda indirmemek için)
+        stash name: 'source-code', includes: '**', useDefaultExcludes: false
     }
 
     stage('Projeleri İşle (Paralel)') {
         def builders = [:]
 
         config.subProjects.each { proj ->
-            // Projenin ana klasör adını bul (Örn: ./Nish.BackOffice/... -> Nish.BackOffice)
             def projFolder = proj.path.split('/')[1] 
-            
-            // KARAR MEKANİZMASI:
-            // 1. Manuel ise YAP.
-            // 2. Geçmiş yoksa (ALL) YAP.
-            // 3. Değişiklik listesinde klasör adı geçiyorsa YAP.
-            // 4. Production branch ise riske atma YAP.
             
             def shouldBuild = isManualBuild || 
                               changedFiles.contains("ALL") || 
@@ -240,18 +212,20 @@ def runMonorepoBuild(config) {
             if (shouldBuild) {
                 builders["🚀 ${proj.name}"] = {
                     stage("Süreç: ${proj.name}") {
-                        // ✨ KRİTİK: Her proje kendi izole klasöründe çalışsın (Sonar çakışmasını önler)
+                        // İzole çalışma alanı
                         ws("workspace/${proj.name}") {
-                            checkout scm
                             
-                            // 1. SONAR
+                            // 3. İndirmek yerine, paketlenmiş kodu aç (ÇOK HIZLI)
+                            unstash 'source-code'
+                            
+                            // SONAR
                             withSonarQubeEnv('SonarQube') {
                                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
                                     bat "${env.SCANNER_TOOL} begin /k:\"${proj.sonarKey}\" /d:sonar.token=\"%SONAR_TOKEN%\" /d:sonar.host.url=\"http://194.99.74.2:9000\""
                                 }
                             }
 
-                            // 2. BUILD
+                            // BUILD (Optimize Edildi)
                             def outputDir = "./publish_output_${proj.name.replace('.', '_')}"
                             bat "dotnet restore ${proj.path}"
                             bat "dotnet build ${proj.path} -c Release --no-restore"
@@ -261,9 +235,11 @@ def runMonorepoBuild(config) {
                                       bat "${env.SCANNER_TOOL} end /d:sonar.token=\"%SONAR_TOKEN%\""
                                  }
                             }
-                            bat "dotnet publish ${proj.path} -c Release -o ${outputDir}"
+                            
+                            // PUBLISH (Tekrar derlemeyi engelle: --no-build)
+                            bat "dotnet publish ${proj.path} -c Release -o ${outputDir} --no-build"
 
-                            // 3. ZIP
+                            // ZIP
                             def version = "1.0.${env.BUILD_NUMBER}"
                             def zipName = "${proj.name}-${env.BRANCH_NAME}-v${version}.zip"
                             if (fileExists(env.ZIP_TOOL)) {
@@ -272,7 +248,7 @@ def runMonorepoBuild(config) {
                                  powershell "Compress-Archive -Path ${outputDir}/* -DestinationPath ./${zipName} -Force"
                             }
 
-                            // 4. UPLOAD
+                            // UPLOAD
                             def targetRepo = proj.repoTest ? proj.repoTest : 'nexus-candidates-maven'
                             nexusArtifactUploader(
                                 nexusVersion: 'nexus3', protocol: 'http', nexusUrl: '194.99.74.2:8081',
@@ -281,7 +257,7 @@ def runMonorepoBuild(config) {
                                 artifacts: [[artifactId: proj.name, classifier: '', file: zipName, type: 'zip']]
                             )
 
-                            // 5. DEPLOY
+                            // DEPLOY TETİKLEME
                             if (config.deploy == true && env.BRANCH_NAME == 'test' && proj.jobTest) {
                                 echo "🚀 ${proj.name} -> Tetikleniyor: ${proj.jobTest}"
                                 build job: proj.jobTest, parameters: [
@@ -293,10 +269,9 @@ def runMonorepoBuild(config) {
                     }
                 }
             } else {
-                // Değişiklik yoksa atla
                 builders["💤 ${proj.name} (Atlandı)"] = {
                     stage("Atlandı: ${proj.name}") {
-                        echo "🛑 ${proj.name} için değişiklik tespit edilmedi. Build atlandı."
+                        echo "🛑 ${proj.name} için değişiklik yok. Build atlandı."
                     }
                 }
             }
