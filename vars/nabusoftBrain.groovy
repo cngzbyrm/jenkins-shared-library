@@ -10,7 +10,7 @@ def call() {
             SONAR_TOKEN_ID = 'sonarqube-token'
             NEXUS_CRED_ID = 'nexus-admin-credentials'
             NEXUS_BASE_URL = "http://194.99.74.2:8081/repository"
-            
+            SONAR_SCANNER_OPTS = "-Xmx2048m"
             // Taranmayacak Dosyalar (HIZ İÇİN ÇOK ÖNEMLİ)
             // publish_output: Derlenmiş dosyalar
             // wwwroot/lib, assets/plugins: Hazır kütüphaneler
@@ -138,7 +138,7 @@ def runSingleBuild(config) {
             env.ENV_TAG = "staging"
             env.TARGET_JOB = "Deploy-to-STAGING"
         }
-        else if (env.BRANCH_NAME == 'production' ||  env.BRANCH_NAME == 'uat-staging1') {
+        else if (env.BRANCH_NAME == 'production' ||  env.BRANCH_NAME == 'production1') {
             env.ENV_TAG = "prod"
             env.TARGET_JOB = "Deploy-to-PROD" 
         }
