@@ -49,7 +49,7 @@ def call() {
                                 subProjects: [
                                     [
                                         name: 'NishCMS.BackOffice',
-                                        folderName: 'Nish.BackOffice', // EKLENDİ: Klasör adı garanti olsun
+                                        folderName: 'Nish.BackOffice', // EKLENDİ: Klasör adı garanti olsunn
                                         path: './Nish.BackOffice/Nish.BackOffice.sln',
                                         sonarKey: 'NishCMS-BackOffice',
                                         repoTest: 'nexus-nabusoft-nishbackoffice-test',
